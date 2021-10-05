@@ -224,14 +224,10 @@ def _create_model():
     #Add center_bias in form of log probability of the whole training set.
     center_bias = tf.keras.Input(shape=[256, 256, 1], name='block10_in')
     cb = Resize(28,28, name='block10_rs1')(center_bias)
-    # cb_2 = layers.Flatten(name='block10_flat1')(cb)
-    # p_cb = layers.Softmax(name='block10_soft1')(cb_2)
-    # def logFunc(x):
-    #     return tf.math.log(x)
-    # p_cb_2 = layers.Lambda(logFunc, name='block10_lambda')(p_cb)
-    # p_cb_3 = layers.Reshape((28,28,1), name='block10_rs')(p_cb_2)
-    # p_cb_3 = 0.0*p_cb_3
+    
     x10 = layers.Add(name='block10_add')([x9_1, cb])
+    
+    # Logit prediction
     # x= layers.BatchNormalization(name='block10_bn')(x10)
     # outputs = layers.Activation('sigmoid', name='block10_out')(x)
 
@@ -459,14 +455,3 @@ for j, ((img,cb), tar_im) in enumerate( tf.data.Dataset.zip((_test_data, _test_t
         plt.imshow(_tar_img[0].numpy().squeeze()) # ground truth
 
 plt.show()
-
-# generate_images(vae, test_inputs, test_targets, test_n)
-#%%
-#==============================================================================
-feats = []
-for layer in DeepGaze.layers:
-    # check for convolutional layer
-    if hasattr(layer, 'name'):
-        print(layer.name,)
-        # get filter weights
-        print(layer.get_weights())
