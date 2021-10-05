@@ -8,7 +8,7 @@ Author Matthias Kümmerer et. al. [https://arxiv.org/abs/1610.01563]
 
 ### The archetecture
 
-![Network Archetecture](https://github.com/Po-Hsuan-Huang/Deep-Gaze-2/blob/master/ReadMe_imgs/arche.png?raw=true)
+![Network Archetecture](https://github.com/Po-Hsuan-Huang/Deep-Gaze-2/blob/master/ReadMe_imgs/arche.png)
 
 The network consists of a VGG16 feature extractor, Feature Readout Module, and output classification softmax layer.
 
