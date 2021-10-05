@@ -35,4 +35,6 @@ In this implemetnation we only evaluate with sAUC, Judd-AUC, Borji-AUC, NSS, CC,
 
 ### Dependency
 
+Download and preprocess the SALICON dataset. 
+
 Tensorflow-gpu 2.6.0
