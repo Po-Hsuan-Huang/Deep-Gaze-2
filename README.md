@@ -24,7 +24,7 @@ Center bias of the training and validation set are preprocessed into probability
 
 ### Training
 
-The paper pretrained the readout module with SALICON dataset with 10 fold cross-validation, then fine-tune it with MIT300 dataset to prevent overfitting. 
+The paper pretrained the readout module with SALICON dataset with 10 fold cross-validation, then used MIT1003 dataset as stopping criterion. 
 
 In this implementation we pretrained the network with SALICON dataset. The implementation also utilizes tf.distribute.MirrorStrategy() to do multi-GPU training.
 
@@ -34,5 +34,7 @@ In this implemetnation we only evaluate with sAUC, Judd-AUC, Borji-AUC, NSS, CC,
 
 
 ### Dependency
+
+Download and preprocess the SALICON dataset. 
 
 Tensorflow-gpu 2.6.0
