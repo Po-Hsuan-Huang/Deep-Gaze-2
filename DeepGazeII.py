@@ -31,7 +31,7 @@ gpus = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_visible_devices(gpus, 'GPU')
 
 # Limite GPU Memroy occupancy of Tensorflow
-gpu_options = tf.compat.v1.GPUOptions(allow_growth=True)
+gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.6, allow_growth=True)
 sess = tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(gpu_options=gpu_options))
 
 # Set session setting to Keras execution.
@@ -39,7 +39,9 @@ tf.compat.v1.keras.backend.set_session(sess)
 
 root_dir = '/home/pohsuanh/Desktop/pohsuan/projects/deep gaze/SALICON/'
 
-BATCH_SIZE = 8
+mode ='fine-tuning'
+
+BATCH_SIZE = 6
 
 EPOCHS = 25
 
@@ -48,9 +50,11 @@ AUTOTUNE = tf.data.AUTOTUNE
 # PREPROCESSING CENTER BIAS
 #""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-train_center_bias_file = os.path.join(root_dir,'train_prob_center_bias_tensor.npy')
+train_center_bias_file = os.path.join(root_dir,'train_center_bias_tensor.npy')
 
-val_center_bias_file = os.path.join(root_dir, 'val_prob_center_bias_tensor.npy')
+val_center_bias_file = os.path.join(root_dir, 'val_center_bias_tensor.npy')
+
+
 
 def convert_to_binary(x)->tf.Tensor:
     return tf.cast(x>0, tf.float32)
@@ -61,16 +65,18 @@ def convert_to_prob(x):
      x = tf.reshape(x, [8,256,256,1])
      return x
 ############## READ CNETER BIAS ########################
+options = tf.data.Options()
+options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
 
 train_bias_tensor, val_bias_tensor = load_center_bias_from_file(train_center_bias_file, val_center_bias_file)
 
-train_bias = tf.data.Dataset.from_tensor_slices(train_bias_tensor)
+train_bias = tf.data.Dataset.from_tensor_slices(train_bias_tensor).with_options(options)
 
-val_bias = tf.data.Dataset.from_tensor_slices(val_bias_tensor)
+val_bias = tf.data.Dataset.from_tensor_slices(val_bias_tensor).with_options(options)
 
-train_bias = train_bias.batch(BATCH_SIZE).prefetch(AUTOTUNE)
+train_bias = train_bias.batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
 
-val_bias = val_bias.batch(BATCH_SIZE).prefetch(AUTOTUNE)
+val_bias = val_bias.batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
 
 # del train_bias_tensor
 # del val_bias_tensor
@@ -83,57 +89,59 @@ def convert_to_prob_density(target):
 
     return target
 
+options = tf.data.Options()
+options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
+
 train_imgs = tf.keras.preprocessing.image_dataset_from_directory(
     os.path.join(root_dir,'images','train'), batch_size = BATCH_SIZE, label_mode = None, shuffle =False,
-  ).map(lambda x:x/255).prefetch(AUTOTUNE)
+  ).map(lambda x:x/255).prefetch(AUTOTUNE).with_options(options)
 
 train_tars = tf.keras.preprocessing.image_dataset_from_directory(
-    os.path.join(root_dir,'annotations','train'), batch_size = BATCH_SIZE,image_size=(256,
-    256), label_mode = None, shuffle =False,
-    ).map(lambda x:x/255).map(tf.image.rgb_to_grayscale).map(convert_to_prob_density).prefetch(AUTOTUNE)
+    os.path.join(root_dir,'annotations','train'), batch_size = BATCH_SIZE,image_size=(120,
+    160), label_mode = None, shuffle =False,
+    ).map(lambda x:x/255).map(tf.image.rgb_to_grayscale).prefetch(AUTOTUNE).with_options(options)
 
 val_imgs = tf.keras.preprocessing.image_dataset_from_directory(
     os.path.join(root_dir,'images','val'), batch_size = BATCH_SIZE, label_mode = None,shuffle =False,
-    ).map(lambda x:x/255).prefetch(AUTOTUNE)
+    ).map(lambda x:x/255).prefetch(AUTOTUNE).with_options(options)
 
 val_tars = tf.keras.preprocessing.image_dataset_from_directory(
-    os.path.join(root_dir,'annotations','val'), batch_size = BATCH_SIZE,image_size=(256,256
+    os.path.join(root_dir,'annotations','val'), batch_size = BATCH_SIZE,image_size=(120,160
     ), label_mode = None,shuffle =False,
-  ).map(lambda x:x/255).map(tf.image.rgb_to_grayscale).map(convert_to_prob_density).prefetch(AUTOTUNE)
+  ).map(lambda x:x/255).map(tf.image.rgb_to_grayscale).prefetch(AUTOTUNE).with_options(options)
 
-
-
-
-
+#%%
 #==============================================================
 # Load fixation maps (not gaussian blurred)
+# Tried to load the numpy arrays as bmp images, or use ImageDataGenerator.
+# The resulting output Tensors are not lossless.
 #==============================================================
-# root_dir = '/media/pohsuanh/Data/SALICON/fixations/fixations/'
 
-# dest_folders = ['train_np', 'val_np', 'test_np']
+from glob import glob
+def train_npy_gen():
+    root_dir = '/media/pohsuanh/Data/SALICON/fixations/fixations/'
+    fmap_paths = sorted(glob(os.path.join(root_dir, 'train_np', '0','*.npy')))
+    tensor_gen = (tf.convert_to_tensor(np.load(path)) for path in fmap_paths)
+    return tensor_gen
 
+def val_npy_gen():
+    root_dir = '/media/pohsuanh/Data/SALICON/fixations/fixations/'
+    fmap_paths = sorted(glob(os.path.join(root_dir, 'val_np', '0','*.npy')))
+    tensor_gen = (tf.convert_to_tensor(np.load(path)) for path in fmap_paths)
+    return tensor_gen
 
-# from tensorflow.keras.preprocessing.image import ImageDataGenerator
+train_fmaps = tf.data.Dataset.from_generator(
+    train_npy_gen,
+    output_signature=(
+        tf.TensorSpec(shape=(480,640),dtype=tf.int32))
+    ).map(lambda x: tf.expand_dims(x, axis=-1)).map(lambda x:tf.image.resize(x, (120,160))).batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
 
-# train_datagen = ImageDataGenerator()
+val_fmaps = tf.data.Dataset.from_generator(
+    val_npy_gen,
+    output_signature=(
+        tf.TensorSpec(shape=(480,640),dtype=tf.int32))
+    ).map(lambda x: tf.expand_dims(x,axis = -1)).map(lambda x:tf.image.resize(x, (120,160))).batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
 
-# test_datagen = ImageDataGenerator()
-
-# train_fmap = train_datagen.flow_from_directory(
-#     os.path.join(root_dir, dest_folders[0]),
-#     target_size=(256, 256),
-#     batch_size=BATCH_SIZE,
-#     class_mode=None,
-#     shuffle = False,
-#     interpolation='bilinear')
-
-# val_fmap = test_datagen.flow_from_directory(
-#     os.path.join(root_dir, dest_folders[1]),
-#     target_size=(150, 150),
-#     batch_size=BATCH_SIZE,
-#     class_mode=None,
-#     shuffle = False,
-#     interpolation='bilinear')
 
 #%%
 lr =0.001
@@ -162,15 +170,15 @@ def _create_model():
 
     for layer in vgg16.layers:
 
-            names = ['block4_conv1',
-                    'block4_conv2',
-                    'block4_conv3',
-                    'block4_pool',
-                    'block5_conv1',
-                    'block5_conv2',
-                    'block5_conv3',
-                    'block5_pool']
-            if layer.name not in names:
+            # names = ['block4_conv1',
+            #         'block4_conv2',
+            #         'block4_conv3',
+            #         'block4_pool',
+            #         'block5_conv1',
+            #         'block5_conv2',
+            #         'block5_conv3',
+            #         'block5_pool']
+            # if layer.name not in names:
                 layer.trainable = False
 
     #""" Extend the base vgg16 model to a FCN-8 to generate fine-semantic map. """
@@ -183,6 +191,8 @@ def _create_model():
     # pepers because Tensroflow based Keras pre-built vgg16 doesn't allow access to
     # the conv layers before relu activation.
     # Instead, I chose conv4_3 after relu, and conv4_pool.
+    # The 'conv' prefix here is equiavalent to 'relu' in the original paper
+    # because all these layers go through relu activations.
 
     x_conv4_3 = vgg16.get_layer('block4_conv3').output # 28*28*512
 
@@ -224,49 +234,32 @@ def _create_model():
     #Add center_bias in form of log probability of the whole training set.
     center_bias = tf.keras.Input(shape=[256, 256, 1], name='block10_in')
     cb = Resize(28,28, name='block10_rs1')(center_bias)
-    
-    x10 = layers.Add(name='block10_add')([x9_1, cb])
-    
-    # Logit prediction
-    # x= layers.BatchNormalization(name='block10_bn')(x10)
-    # outputs = layers.Activation('sigmoid', name='block10_out')(x)
+    # cb_2 = layers.Flatten(name='block10_flat1')(cb)
+    # p_cb = layers.Softmax(name='block10_soft1')(cb_2)
+    # def logFunc(x):
+    #     return tf.math.log(x)
+    # p_cb_2 = layers.Lambda(logFunc, name='block10_lambda')(p_cb)
+    # p_cb_3 = layers.Reshape((28,28,1), name='block10_rs')(p_cb_2)
+    p_cb_3 = 0.0*cb
+    x10 = layers.Add(name='block10_add')([x9_1, p_cb_3])
+    x= layers.BatchNormalization(name='block10_bn')(x10)
+    x = layers.Activation('sigmoid', name='block10_out')(x)
 
     # Covnert to probability
-    x = layers.Flatten()(x10)
-    x = layers.Softmax()(x)
-    x = layers.Reshape((28,28,1))(x)
+    # x = layers.Flatten()(x10)
+    # x = layers.Softmax()(x)
+    # x = layers.Reshape((28,28,1))(x)
     # Resize
-    outputs = Resize(256,256)(x)
+    outputs = Resize(120,160)(x)
 
     DeepGaze = tf.keras.Model([vgg16.input, center_bias], outputs)
 
     return DeepGaze
 
-
-
 #%%
-from utils.metrics_classes import AUC_Borji
-def correlationLoss(y_true, y_pred, axis = -1):
-    """
-    Loss function that maximizes the pearson correlation coefficient between the predicted values and the labels,
-    while trying to have the same mean and variance.
+from utils.metrics_classes import AUC_Borji_v2
+from utils.losses import borji_auc_loss_fn
 
-    The first dimension of the input is batch_size.
-    Flatten the input to [Batch, W*H*C]
-    """
-    y_pred = tf.convert_to_tensor(y_pred)
-    y_true = tf.cast(y_true, y_pred.dtype)
-    batch_size = y_pred.shape[0]
-    flat_size = y_pred.shape[1]*y_pred.shape[2]
-    x = tf.reshape(y_true,[batch_size, flat_size])
-    y = tf.reshape(y_pred, [batch_size, flat_size])
-    xmean = tf.reduce_mean(x, axis = axis)
-    ymean = tf.reduce_mean(y, axis = axis)
-    xsqsum = tf.reduce_sum( tf.math.squared_difference(x, xmean), axis=axis)
-    ysqsum = tf.reduce_sum( tf.math.squared_difference(y, ymean), axis=axis)
-    cov = tf.reduce_sum( (x - xmean) * (y - ymean), axis=axis)
-    corr = cov / tf.sqrt(xsqsum * ysqsum)
-    return tf.convert_to_tensor(tf.keras.mean(tf.constant(1.0, dtype=x.dtype) - corr , dtype=tf.float32 ))
 
 def L_NSS(y_true, y_pred, axis = -1, batch_size = 8): # Normalized Scan Path Loss
     """
@@ -291,25 +284,67 @@ def total_loss(y_true, y_pred):
 
 strategy = tf.distribute.MirroredStrategy()
 print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
-with strategy.scope():
-    bc = tf.keras.metrics.BinaryCrossentropy(
-    name="binary_crossentropy", dtype=None, from_logits=False, label_smoothing=0
-    )
-    auc = tf.keras.metrics.AUC(name = 'auc')
-    adam = tf.keras.optimizers.Adam(learning_rate = 0.0001)
-    sgd = tf.keras.optimizers.SGD(learning_rate = lr, momentum=0.9, nesterov=True )
 
-    DeepGaze = _create_model()
-    DeepGaze.compile(optimizer=sgd, loss=tf.keras.losses.MSE, metrics = [auc, bc, 'accuracy'])
+if mode  == 'training':
+    with strategy.scope():
+        b_auc =AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
+        bc = tf.keras.metrics.BinaryCrossentropy(
+        name="binary_crossentropy", dtype=None, from_logits=False, label_smoothing=0
+        )
+        auc = tf.keras.metrics.AUC(name = 'auc')
+        acc = tf.keras.metrics.Accuracy(name ='Accuracy')
+        adam = tf.keras.optimizers.Adam(learning_rate = 0.0001)
+        sgd = tf.keras.optimizers.SGD(learning_rate = lr, momentum=0.9, nesterov=True )
+
+        DeepGaze = _create_model()
+        DeepGaze.compile(optimizer = sgd, loss = 'binary_crossentropy', metrics = [ acc, auc, b_auc ], run_eagerly=True)
+
+
+    # DeepGaze.summary()
+    options = tf.data.Options()
+    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
+    train_in = tf.data.Dataset.zip((train_imgs, train_bias)).with_options(options)
+    val_in = tf.data.Dataset.zip((val_imgs, val_bias)).with_options(options)
+
+    # for training
+    train_data =tf.data.Dataset.zip((train_in, train_tars)).with_options(options)
+    val_data = tf.data.Dataset.zip((val_in, val_tars)).with_options(options)
+
+if mode  == 'fine-tuning':
+    with strategy.scope():
+            b_auc =AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
+            bc = tf.keras.metrics.BinaryCrossentropy(
+            name="binary_crossentropy", dtype=None, from_logits=False, label_smoothing=0
+            )
+            auc = tf.keras.metrics.AUC(name = 'auc')
+            acc = tf.keras.metrics.Accuracy(name ='Accuracy')
+            adam = tf.keras.optimizers.Adam(learning_rate = 0.0001)
+            sgd = tf.keras.optimizers.SGD(learning_rate = lr, momentum=0.9, nesterov=True )
+
+            DeepGaze = _create_model()
+            DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [acc, auc, b_auc], run_eagerly=True)
+
+
+    # DeepGaze.summary()
+    options = tf.data.Options()
+    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
+    train_in = tf.data.Dataset.zip((train_imgs, train_bias)).with_options(options)
+    val_in = tf.data.Dataset.zip((val_imgs, val_bias)).with_options(options)
+
+    # for fine tuning
+    train_data =tf.data.Dataset.zip((train_in, train_fmaps)).with_options(options)
+    val_data = tf.data.Dataset.zip((val_in, val_fmaps)).with_options(options)
+#%% Visualize
+
+
+
+
 #%%
-DeepGaze.summary()
-
-train_in = tf.data.Dataset.zip((train_imgs, train_bias))
-val_in = tf.data.Dataset.zip((val_imgs, val_bias))
-train_data =tf.data.Dataset.zip((train_in, train_tars))
-val_data = tf.data.Dataset.zip((val_in, val_tars))
 
 checkpoint_path = "./pretrained_model/deepgaze2/best_model.ckpt"
+
+
+    # DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [ b_auc])
 
 try :
 
@@ -327,8 +362,8 @@ cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
                                                  save_freq = 'epoch',
                                                  save_weights_only = False,
                                                  save_best_only = True,
-                                                 mode = 'min',
-                                                 monitor= 'binary_crossentropy',
+                                                 mode = 'max',
+                                                 monitor= 'auc',
                                                  verbose=1)
 
 tb_callback = tf.keras.callbacks.TensorBoard(log_dir="./logs",
@@ -351,8 +386,6 @@ DeepGaze.fit( train_data, validation_data=val_data,epochs= 20, workers= 4 ,
 # Evaluate the result
 # ==============================================================================
 
-
-DeepGaze =
 from utils.metrics_functions import AUC_Judd, AUC_shuffled, AUC_Borji, CC, NSS, SIM
 
 # AUC_judd = AUC_Judd(saliency_map, fground_truth)
@@ -360,27 +393,44 @@ from utils.metrics_functions import AUC_Judd, AUC_shuffled, AUC_Borji, CC, NSS, 
 # nss = NSS(saliency_map, fground_truth)
 # cc = CC(saliency_map, mground_truth)
 # sim = SIM(saliency_map, mground_truth)
-AUC_judd = AUC_Judd
-nss = NSS
-auc = tf.keras.metrics.AUC(name = 'auc')
 
-borji_auc_scores = []
-for ((img,cb), tar) in val_data:
-    pred = DeepGaze.predict([img,cb])
-    borji_auc_scores.append(AUC_Borji(tar, pred))
-    borji_auc_scores.append(AUC_Borji(tar, pred))
-    borji_auc_scores.append(AUC_Borji(tar, pred))
-mean_bauc = np.mean(borji_auc_scores)
-print(mean_bauc)
+_queue_metrics_ = {'NSS':[], 'SIM':[], 'CC':[], 'AUC_Judd':[], 'AUC_shuffled':[], 'AUC_Borji':[] }
+_mean_metrics_ = _queue_metrics_.copy()
+_names_  = list(_queue_metrics_.keys())
+
+for h, ((img, cb), tar) in enumerate(val_data.take(2)):
+    pred = DeepGaze.predict((img, cb), workers =12)
+    fmap = val_fmaps.next()
+    tar = tar.numpy()
+
+    score = AUC_Judd(pred, fmap, jitter=True)
+    _queue_metrics_['AUC_Judd'].append(score)
+
+    score = AUC_Borji(fmap, pred)
+    _queue_metrics_['AUC_Borji'].append(score)
+
+    NSS(fmap, pred )
+    _queue_metrics_['NSS'].append(score)
+
+    score = CC(pred, tar)
+    _queue_metrics_['CC'].append(score)
+
+    score = SIM(pred, tar)
+    _queue_metrics_['SIM'].append(score)
 
 
+for i in range(6):
+    _mean_metrics_[i].append(np.mean(_queue_metrics_[_names_[i]]))
+
+for i in range(6):
+    print("{}: {}".format(_mean_metrics_.keys[i], _mean_metrics_.items[i]))
 #%%
 
 fig = plt.figure(figsize =(2*4,8*4) )
 # Reconstruct Data sets for ploting
 fig.subplots_adjust(hspace=0.0001)
 
-test_dataset = tf.data.Dataset.zip((train_imgs, train_tars)).take(1)
+test_dataset = tf.data.Dataset.zip((train_imgs, train_fmaps)).take(1)
 
 BATCH_SIZE  = 8
 
@@ -447,7 +497,8 @@ for j, ((img,cb), tar_im) in enumerate( tf.data.Dataset.zip((_test_data, _test_t
         ax = plt.subplot(BATCH_SIZE, 3, 2 + 3*i)
         ax.set_xticks([])
         ax.set_yticks([])
-        plt.imshow(fmap[0].squeeze()-_cb[0].numpy().squeeze()) # predicted fixation
+        # plt.imshow(fmap[0].squeeze()-_cb[0].numpy().squeeze()) # predicted fixation
+        plt.imshow(fmap[0].squeeze()) # predicted fixation
 
         ax = plt.subplot(BATCH_SIZE, 3, 3 + 3*i)
         ax.set_xticks([])
@@ -455,3 +506,14 @@ for j, ((img,cb), tar_im) in enumerate( tf.data.Dataset.zip((_test_data, _test_t
         plt.imshow(_tar_img[0].numpy().squeeze()) # ground truth
 
 plt.show()
+
+# generate_images(vae, test_inputs, test_targets, test_n)
+#%%
+#==============================================================================
+feats = []
+for layer in DeepGaze.layers:
+    # check for convolutional layer
+    if hasattr(layer, 'name'):
+        print(layer.name,)
+        # get filter weights
+        print(layer.get_weights())

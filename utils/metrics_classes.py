@@ -15,15 +15,17 @@ from skimage.transform import resize
 from utils.evaluation.tools import normalize, match_hist
 import tensorflow_probability as tfp
 import tensorflow.python.util.deprecation as deprecation
+
+
 class AUC_Borji_v1(tf.keras.metrics.Metric):
     """
     Non-parallelized version. For-loops are usually not allowed in tensor graphs.
     Replaced them with Tensor multiplications.
     """
-    deprecation.deprecated('12/31/2023', 'Use AUC_Borji_v2.')
+    deprecation.deprecated('2023-12-31', 'Use AUC_Borji_v2.')
 
     def __init__(self, name = 'AUC_Borji',  n_rep= 10, n_split= 21, rand_sampler= None, **kwargs):
-        super(AUC_Borji, self).__init__(name=name, **kwargs)
+        super(AUC_Borji_v1, self).__init__(name=name, **kwargs)
         self.auc_borji = self.add_weight(name="auc_borji", initializer="zeros")
 
         self.auc = self.add_weight(name='_auc_', shape=n_rep, initializer="zeros")
@@ -32,6 +34,7 @@ class AUC_Borji_v1(tf.keras.metrics.Metric):
         self.rand_sampler = rand_sampler
         self.n_rep = n_rep
         self.n_split = n_split
+
 
     def update_state(self, fixation_map, saliency_map, n_rep = 10, n_split = 21, rand_sampler=None, **kwargs):
         """
@@ -69,6 +72,7 @@ class AUC_Borji_v1(tf.keras.metrics.Metric):
 
     	# Normalize saliency map to have values between [0,1]
         saliency_map = (saliency_map - tf.reduce_min(saliency_map))/(tf.reduce_max(saliency_map)-tf.reduce_min(saliency_map))
+
         Batch_Size = fixation_map.shape[0]
 
 
@@ -136,11 +140,13 @@ class AUC_Borji_v2(tf.keras.metrics.Metric):
 
     """
 
-    def __init__(self, name = 'AUC_Borji',  n_rep= 10, n_split= 21, **kwargs):
+    def __init__(self, name = 'AUC_Borji',  n_rep= 10, n_split= 21, replica_in_sync = 1,  **kwargs):
         super(AUC_Borji_v2, self ).__init__(name=name,**kwargs)
         self.auc_borji = self.add_weight(name="auc_borji", initializer="zeros")
         self.n_rep = n_rep
         self.n_split = n_split
+        self.replica_in_sync = replica_in_sync
+
 
     def random_choice(self, n_rep, n_pixels, n_fix, replacement = False):
             # Sampling without replacement using Gumble matrix trick.
@@ -193,7 +199,7 @@ class AUC_Borji_v2(tf.keras.metrics.Metric):
             saliency_map = tf.image.resize(saliency_map, (fixation_map.shape[1], fixation_map.shape[2]), method='nearest')
 
     	# Normalize saliency map to have values between [0,1]
-        saliency_map = (saliency_map - tf.reduce_min(saliency_map))/(tf.reduce_max(saliency_map)-tf.reduce_min(saliency_map))
+        # saliency_map = (saliency_map - tf.reduce_min(saliency_map))/(tf.reduce_max(saliency_map)-tf.reduce_min(saliency_map))
         Batch_Size = fixation_map.shape[0]
 
         S = tf.cast(tf.reshape(saliency_map, [Batch_Size, -1]), dtype =tf.float32)
@@ -253,7 +259,7 @@ class AUC_Borji_v2(tf.keras.metrics.Metric):
 
         auc = tf.reduce_mean(area, axis =-1) # [batch]
 
-        self.auc_borji.assign(tf.math.reduce_mean(auc)) # Average across random splits
+        self.auc_borji.assign(tf.math.reduce_mean(auc)/ self.replica_in_sync) # Average across random splits
 
         return self.auc_borji
 
