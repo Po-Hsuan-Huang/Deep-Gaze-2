@@ -19,7 +19,6 @@ Finally, the output of the 1x1 convolutional block is rescaled to size of target
 import tensorflow as tf
 from SaliencyMapData import MIT1003
 from utils.smoothing import Gaussian_kernel
-from utils.augmentation import augment
 from utils.centerbias import load_center_bias_from_file
 import os
 import numpy as np
@@ -31,7 +30,7 @@ gpus = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_visible_devices(gpus, 'GPU')
 
 # Limite GPU Memroy occupancy of Tensorflow
-gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.6, allow_growth=True)
+gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.7, allow_growth=True)
 sess = tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(gpu_options=gpu_options))
 
 # Set session setting to Keras execution.
@@ -65,6 +64,8 @@ def convert_to_prob(x):
      x = tf.reshape(x, [8,256,256,1])
      return x
 ############## READ CNETER BIAS ########################
+
+"""
 options = tf.data.Options()
 options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
 
@@ -77,6 +78,7 @@ val_bias = tf.data.Dataset.from_tensor_slices(val_bias_tensor).with_options(opti
 train_bias = train_bias.batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
 
 val_bias = val_bias.batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
+"""
 
 # del train_bias_tensor
 # del val_bias_tensor
@@ -134,13 +136,13 @@ train_fmaps = tf.data.Dataset.from_generator(
     train_npy_gen,
     output_signature=(
         tf.TensorSpec(shape=(480,640),dtype=tf.int32))
-    ).map(lambda x: tf.expand_dims(x, axis=-1)).map(lambda x:tf.image.resize(x, (120,160))).batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
+    ).map(lambda x: tf.expand_dims(x, axis=-1)).map(lambda image:tf.image.resize(image, (120,160))).map(lambda y: tf.where(y>0, 1, 0)).batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
 
 val_fmaps = tf.data.Dataset.from_generator(
     val_npy_gen,
     output_signature=(
         tf.TensorSpec(shape=(480,640),dtype=tf.int32))
-    ).map(lambda x: tf.expand_dims(x,axis = -1)).map(lambda x:tf.image.resize(x, (120,160))).batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
+    ).map(lambda x: tf.expand_dims(x,axis = -1)).map(lambda image:tf.image.resize(image, (120,160))).map(lambda y: tf.where( y> 0, 1, 0)).batch(BATCH_SIZE).prefetch(AUTOTUNE).with_options(options)
 
 
 #%%
@@ -232,17 +234,17 @@ def _create_model():
     x9 = tf.nn.conv2d(x8_5, gaussian_kernel, strides = [1,1,1,1], padding='SAME', name='block9_conv1' )
     x9_1 = Resize(28,28, name='block9_rs1')(x9)
     #Add center_bias in form of log probability of the whole training set.
-    center_bias = tf.keras.Input(shape=[256, 256, 1], name='block10_in')
-    cb = Resize(28,28, name='block10_rs1')(center_bias)
+    # center_bias = tf.keras.Input(shape=[256, 256, 1], name='block10_in')
+    # cb = Resize(28,28, name='block10_rs1')(center_bias)
     # cb_2 = layers.Flatten(name='block10_flat1')(cb)
     # p_cb = layers.Softmax(name='block10_soft1')(cb_2)
     # def logFunc(x):
     #     return tf.math.log(x)
     # p_cb_2 = layers.Lambda(logFunc, name='block10_lambda')(p_cb)
     # p_cb_3 = layers.Reshape((28,28,1), name='block10_rs')(p_cb_2)
-    p_cb_3 = 0.0*cb
-    x10 = layers.Add(name='block10_add')([x9_1, p_cb_3])
-    x= layers.BatchNormalization(name='block10_bn')(x10)
+    # p_cb_3 = 0.0*cb
+    # x10 = layers.Add(name='block10_add')([x9_1, p_cb_3])
+    x= layers.BatchNormalization(name='block10_bn')(x9_1)
     x = layers.Activation('sigmoid', name='block10_out')(x)
 
     # Covnert to probability
@@ -252,7 +254,7 @@ def _create_model():
     # Resize
     outputs = Resize(120,160)(x)
 
-    DeepGaze = tf.keras.Model([vgg16.input, center_bias], outputs)
+    DeepGaze = tf.keras.Model(vgg16.input, outputs)
 
     return DeepGaze
 
@@ -280,12 +282,13 @@ def total_loss(y_true, y_pred):
     BCE = tf.keras.losses.binary_crossentropy(y_true, y_pred)
     # CC = correlationLoss(y_true, y_pred)
     MSE = tf.keras.losses.MSE(y_true, y_pred)
-    return KLD+BCE+KLD
+    return 0.001*KLD+BCE
 
 strategy = tf.distribute.MirroredStrategy()
 print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
 if mode  == 'training':
+
     with strategy.scope():
         b_auc =AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
         bc = tf.keras.metrics.BinaryCrossentropy(
@@ -297,20 +300,78 @@ if mode  == 'training':
         sgd = tf.keras.optimizers.SGD(learning_rate = lr, momentum=0.9, nesterov=True )
 
         DeepGaze = _create_model()
-        DeepGaze.compile(optimizer = sgd, loss = 'binary_crossentropy', metrics = [ acc, auc, b_auc ], run_eagerly=True)
+        DeepGaze.compile(optimizer = sgd, loss = tf.keras.losses.MSE, metrics = [ acc, auc, b_auc ], run_eagerly=True)
 
 
+    checkpoint_path = "./pretrained_model/best_model_small/pretrain_model_small.ckpt"
+
+
+    # DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [ b_auc])
+
+    try :
+
+        DeepGaze.load_weights("./pretrained_model/best_model_small/pretain_model_small.ckpt/variables/variables")
+
+        print('Load pretraiend weights.')
+
+    except:
+
+        print('No pretrained weights.')
     # DeepGaze.summary()
     options = tf.data.Options()
     options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
-    train_in = tf.data.Dataset.zip((train_imgs, train_bias)).with_options(options)
-    val_in = tf.data.Dataset.zip((val_imgs, val_bias)).with_options(options)
+    # train_in = tf.data.Dataset.zip((train_imgs, train_bias)).with_options(options)
+    # val_in = tf.data.Dataset.zip((val_imgs, val_bias)).with_options(options)
 
     # for training
-    train_data =tf.data.Dataset.zip((train_in, train_tars)).with_options(options)
-    val_data = tf.data.Dataset.zip((val_in, val_tars)).with_options(options)
+    train_data =tf.data.Dataset.zip((train_imgs, train_tars)).with_options(options)
+    val_data = tf.data.Dataset.zip((val_imgs, val_tars)).with_options(options)
+
+
+    lr_callback = tf.keras.callbacks.LearningRateScheduler(inverse_epoch_learning_scheduler)
+
+    cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                     save_freq = 'epoch',
+                                                     save_weights_only = False,
+                                                     save_best_only = True,
+                                                     mode = 'max',
+                                                     monitor= 'auc',
+                                                     verbose=1)
+
+    tb_callback = tf.keras.callbacks.TensorBoard(log_dir="./logs",
+                                                histogram_freq=1,
+                                                write_graph=True,
+                                                write_images=True,
+                                                write_steps_per_second=False,
+                                                update_freq="epoch",
+                                                profile_batch=2,
+                                                embeddings_freq=2,
+                                                embeddings_metadata='./embedding'
+                                                )
+
+    DeepGaze.fit( train_data, validation_data=val_data,epochs= 20, workers= 14 ,
+              use_multiprocessing =True,
+              steps_per_epoch = 400,
+              validation_steps= 50,
+              callbacks=[lr_callback, cp_callback, tb_callback ])
 
 if mode  == 'fine-tuning':
+
+    checkpoint_path = "./pretrained_model/best_model_small/best_model_small.ckpt"
+
+
+    # DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [ b_auc])
+
+    try :
+
+        DeepGaze.load_weights("./pretrained_model/best_model_small/best_model_small.ckpt/variables/variables")
+
+        print('Load pretraiend weights.')
+
+    except:
+
+        print('No pretrained weights.')
+
     with strategy.scope():
             b_auc =AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
             bc = tf.keras.metrics.BinaryCrossentropy(
@@ -322,94 +383,100 @@ if mode  == 'fine-tuning':
             sgd = tf.keras.optimizers.SGD(learning_rate = lr, momentum=0.9, nesterov=True )
 
             DeepGaze = _create_model()
-            DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [acc, auc, b_auc], run_eagerly=True)
+            DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [auc, b_auc], run_eagerly=True)
 
 
     # DeepGaze.summary()
     options = tf.data.Options()
     options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
-    train_in = tf.data.Dataset.zip((train_imgs, train_bias)).with_options(options)
-    val_in = tf.data.Dataset.zip((val_imgs, val_bias)).with_options(options)
+    # train_in = tf.data.Dataset.zip((train_imgs, train_bias)).with_options(options)
+    # val_in = tf.data.Dataset.zip((val_imgs, val_bias)).with_options(options)
 
     # for fine tuning
-    train_data =tf.data.Dataset.zip((train_in, train_fmaps)).with_options(options)
-    val_data = tf.data.Dataset.zip((val_in, val_fmaps)).with_options(options)
-#%% Visualize
+    train_data =tf.data.Dataset.zip((train_imgs, train_fmaps)).with_options(options)
+    val_data = tf.data.Dataset.zip((val_imgs, val_fmaps)).with_options(options)
 
+    lr_callback = tf.keras.callbacks.LearningRateScheduler(inverse_epoch_learning_scheduler)
 
+    cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                     save_freq = 'epoch',
+                                                     save_weights_only = False,
+                                                     save_best_only = True,
+                                                     mode = 'max',
+                                                     monitor= 'auc',
+                                                     verbose=1)
 
+    tb_callback = tf.keras.callbacks.TensorBoard(log_dir="./logs",
+                                                histogram_freq=1,
+                                                write_graph=True,
+                                                write_images=True,
+                                                write_steps_per_second=False,
+                                                update_freq="epoch",
+                                                profile_batch=2,
+                                                embeddings_freq=2,
+                                                embeddings_metadata='./embedding'
+                                                )
 
-#%%
-
-checkpoint_path = "./pretrained_model/deepgaze2/best_model.ckpt"
-
-
-    # DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [ b_auc])
-
-try :
-
-    DeepGaze.load_weights("./pretrained_model/deepgaze2/best_model.ckpt")
-
-    print('Load pretraiend weights.')
-
-except:
-
-    print('No pretrained weights.')
-
-lr_callback = tf.keras.callbacks.LearningRateScheduler(inverse_epoch_learning_scheduler)
-
-cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
-                                                 save_freq = 'epoch',
-                                                 save_weights_only = False,
-                                                 save_best_only = True,
-                                                 mode = 'max',
-                                                 monitor= 'auc',
-                                                 verbose=1)
-
-tb_callback = tf.keras.callbacks.TensorBoard(log_dir="./logs",
-                                            histogram_freq=0,
-                                            write_graph=True,
-                                            write_images=True,
-                                            write_steps_per_second=False,
-                                            update_freq="epoch",
-                                            profile_batch=2,
-                                            embeddings_freq=2,
-                                            embeddings_metadata='./embedding'
-                                            )
-
-DeepGaze.fit( train_data, validation_data=val_data,epochs= 20, workers= 4 ,
-          use_multiprocessing =True,
-          validation_steps= 400,
-          callbacks=[lr_callback, cp_callback, tb_callback ])
+    DeepGaze.fit( train_data, validation_data= val_data, epochs= 20, workers= 14 ,
+              use_multiprocessing =True,
+              steps_per_epoch = 400,
+              validation_steps= 50,
+              callbacks=[lr_callback, cp_callback, tb_callback ])
 #%%
 # ==============================================================================
 # Evaluate the result
 # ==============================================================================
-
 from utils.metrics_functions import AUC_Judd, AUC_shuffled, AUC_Borji, CC, NSS, SIM
 
-# AUC_judd = AUC_Judd(saliency_map, fground_truth)
-# sAUC = AUC_shuffled(saliency_map, fground_truth, other_map)
-# nss = NSS(saliency_map, fground_truth)
-# cc = CC(saliency_map, mground_truth)
-# sim = SIM(saliency_map, mground_truth)
-
-_queue_metrics_ = {'NSS':[], 'SIM':[], 'CC':[], 'AUC_Judd':[], 'AUC_shuffled':[], 'AUC_Borji':[] }
-_mean_metrics_ = _queue_metrics_.copy()
+_queue_metrics_ = {'AUC_shuffled':[], 'AUC_Judd':[], 'AUC_Borji':[],'NSS':[], 'CC':[], 'SIM':[] }
+_mean_metrics_ = {'AUC_shuffled':[], 'AUC_Judd':[], 'AUC_Borji':[],'NSS':[], 'CC':[], 'SIM':[]  }
 _names_  = list(_queue_metrics_.keys())
 
-for h, ((img, cb), tar) in enumerate(val_data.take(2)):
-    pred = DeepGaze.predict((img, cb), workers =12)
-    fmap = val_fmaps.next()
-    tar = tar.numpy()
+other_fmaps= train_fmaps.shuffle(buffer_size =20).take(20)
+val_data = tf.data.Dataset.zip((val_imgs, val_tars, val_fmaps, other_fmaps))
 
+DeepGaze = _create_model()
+
+DeepGaze.load_weights("./pretrained_model/best_model_small/best_model_small.ckpt/variables/variables")
+#%%
+for h, (img, tar, fmap, other_fmap) in enumerate(val_data.take(1)):
+
+    """ each array is actually a mini batch"""
+
+    pred = DeepGaze.predict(img, workers =12)
+    tar = tar.numpy()
+    fmap = fmap.numpy()
+    other_fmap = other_fmap.numpy()
+    # fig, axes = plt.subplots(3,3,sharex = True, sharey=True)
+    # for i in range(3):
+    #     axes[0][i].imshow(fmap[i])
+    #     axes[0][i].set_title('fmap')
+    #     axes[1][i].imshow(pred[i])
+    #     axes[1][i].set_title('pred')
+    #     axes[2][i].imshow(other_fmap[i])
+    #     axes[2][i].set_title('other_fmap')
+
+    # fig, axes = plt.subplots(6,2, sharex = True, sharey = True)
+
+    # for i in range(6):
+    score, (tp, fp)=  AUC_shuffled(fmap, pred, other_fmap)
+    _queue_metrics_['AUC_shuffled'].append(score)
+    #     tp = np.asanyarray(tp)
+    #     fp = np.asanyarray(fp)
+    #     axes[i][0].plot(np.sum(fp, axis=0), np.sum(tp, axis=0))
+    #     axes[i][0].set_title('img{}_sAUC'.format(i))
     score = AUC_Judd(pred, fmap, jitter=True)
     _queue_metrics_['AUC_Judd'].append(score)
 
-    score = AUC_Borji(fmap, pred)
+    score , (tp, fp)= AUC_Borji(fmap, pred)
+    #     tp = np.asanyarray(tp)
+    #     fp = np.asanyarray(fp)
     _queue_metrics_['AUC_Borji'].append(score)
+    #     axes[i][1].plot(np.sum(fp, axis=0), np.sum(tp, axis=0))
+    #     axes[i][1].set_title('img{}_Borji_AUC'.format(i))
 
-    NSS(fmap, pred )
+
+    score = NSS(fmap, pred )
     _queue_metrics_['NSS'].append(score)
 
     score = CC(pred, tar)
@@ -420,46 +487,18 @@ for h, ((img, cb), tar) in enumerate(val_data.take(2)):
 
 
 for i in range(6):
-    _mean_metrics_[i].append(np.mean(_queue_metrics_[_names_[i]]))
+    mean =np.mean(np.asanyarray(_queue_metrics_[_names_[i]]))
+    _mean_metrics_[_names_[i]].append(mean)
 
 for i in range(6):
-    print("{}: {}".format(_mean_metrics_.keys[i], _mean_metrics_.items[i]))
-#%%
+    print("{}: {}".format(list(_mean_metrics_.keys())[i], list(_mean_metrics_.values())[i]))
 
-fig = plt.figure(figsize =(2*4,8*4) )
-# Reconstruct Data sets for ploting
-fig.subplots_adjust(hspace=0.0001)
-
-test_dataset = tf.data.Dataset.zip((train_imgs, train_fmaps)).take(1)
-
-BATCH_SIZE  = 8
-
-for j, (img, tar_im) in enumerate(test_dataset ):
-
-    for i in range(BATCH_SIZE):
-
-        print('show images', img.shape )
-
-        _img = tf.expand_dims(img[i], axis = 0)
-
-        _tar_img = tf.expand_dims(tar_im[i], axis = 0)
-
-        ax = plt.subplot(BATCH_SIZE, 2, 1 + 2*i)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        plt.imshow(_img[0].numpy().squeeze())  # original
-
-        ax = plt.subplot(BATCH_SIZE, 2, 2 + 2*i)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        plt.imshow(_tar_img[0].numpy().squeeze()) # ground truth
-
-plt.show()
 #%%
 #==============================================================================
 #Visualization
 #==============================================================================
 test_n = 1 #one element, but batch size is four.
+BATCH_SIZE  = 6
 
 fig = plt.figure(figsize =(3*4,8*4) )
 # Reconstruct Data sets for ploting
@@ -467,13 +506,9 @@ fig.subplots_adjust(hspace=0.001)
 
 _test_imgs = val_imgs.take(test_n)
 
-_test_bias = val_bias.take(test_n)
-
 _test_tars = val_tars.take(test_n)
 
-_test_data = tf.data.Dataset.zip((_test_imgs, _test_bias))
-
-for j, ((img,cb), tar_im) in enumerate( tf.data.Dataset.zip((_test_data, _test_tars))):
+for j, (img, tar_im) in enumerate( tf.data.Dataset.zip((_test_imgs, _test_tars))):
 
     for i in range(BATCH_SIZE):
 
@@ -481,11 +516,9 @@ for j, ((img,cb), tar_im) in enumerate( tf.data.Dataset.zip((_test_data, _test_t
 
         _img = tf.expand_dims(img[i], axis = 0)
 
-        _cb = tf.expand_dims(cb[i], axis = 0)
-
         _tar_img = tf.expand_dims(tar_im[i], axis = 0)
 
-        test_pred = DeepGaze([_img, _cb], training = False) #  list of Tensors
+        test_pred = DeepGaze(_img, training = False) #  list of Tensors
 
         fmap = test_pred.numpy() # np array
 
@@ -509,11 +542,69 @@ plt.show()
 
 # generate_images(vae, test_inputs, test_targets, test_n)
 #%%
+
+#==============================================================================
+#Visualization with center bias
+#==============================================================================
+def visualize():
+
+    test_n = 1 #one element, but batch size is four.
+
+    fig = plt.figure(figsize =(3*4,8*4) )
+    # Reconstruct Data sets for ploting
+    fig.subplots_adjust(hspace=0.001)
+
+    _test_imgs = val_imgs.take(test_n)
+
+    _test_bias = val_bias.take(test_n)
+
+    _test_tars = val_tars.take(test_n)
+
+    _test_data = tf.data.Dataset.zip((_test_imgs, _test_bias))
+
+    for j, ((img,cb), tar_im) in enumerate( tf.data.Dataset.zip((_test_data, _test_tars))):
+
+        for i in range(BATCH_SIZE):
+
+            print('show images', img.shape )
+
+            _img = tf.expand_dims(img[i], axis = 0)
+
+            _cb = tf.expand_dims(cb[i], axis = 0)
+
+            _tar_img = tf.expand_dims(tar_im[i], axis = 0)
+
+            test_pred = DeepGaze([_img, _cb], training = False) #  list of Tensors
+
+            fmap = test_pred.numpy() # np array
+
+            ax = plt.subplot(BATCH_SIZE, 3, 1 + 3*i)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            plt.imshow(_img[0].numpy().squeeze())  # original
+
+            ax = plt.subplot(BATCH_SIZE, 3, 2 + 3*i)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            # plt.imshow(fmap[0].squeeze()-_cb[0].numpy().squeeze()) # predicted fixation
+            plt.imshow(fmap[0].squeeze()) # predicted fixation
+
+            ax = plt.subplot(BATCH_SIZE, 3, 3 + 3*i)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            plt.imshow(_tar_img[0].numpy().squeeze()) # ground truth
+
+    plt.show()
+
+# generate_images(vae, test_inputs, test_targets, test_n)
+#%%
 #==============================================================================
 feats = []
 for layer in DeepGaze.layers:
     # check for convolutional layer
     if hasattr(layer, 'name'):
-        print(layer.name,)
+
         # get filter weights
-        print(layer.get_weights())
+        if layer.name =='block8_conv1':
+            weights = layer.get_weights()[0]
+            print(weights.shape)
