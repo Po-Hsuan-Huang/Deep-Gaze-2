@@ -49,7 +49,7 @@ def AUC_Judd(saliency_map, fixation_map, jitter=True):
    	-------
    	AUC : float, between [0,1]
     '''
-
+    epsilon = 1e-7
     try:
         saliency_map = np.array(saliency_map, copy=False)
         fixation_map = np.array(fixation_map, copy=False) > 0.5
@@ -63,7 +63,7 @@ def AUC_Judd(saliency_map, fixation_map, jitter=True):
         return np.nan
 	# Make the saliency_map the size of the fixation_map
     if saliency_map.shape != fixation_map.shape:
-        saliency_map = resize(saliency_map, fixation_map.shape, order=3, mode='nearest')
+        saliency_map = resize(saliency_map, fixation_map.shape, order=3)
 	# Jitter the saliency map slightly to disrupt ties of the same saliency value
     if jitter:
         saliency_map += random.rand(*saliency_map.shape) * 1e-7
@@ -84,7 +84,7 @@ def AUC_Judd(saliency_map, fixation_map, jitter=True):
     for k, thresh in enumerate(thresholds):
         above_th = np.sum(S >= thresh) # Total number of saliency map values above threshold
         tp[k+1] = (k + 1) / float(n_fix) # Ratio saliency map values at fixation locations above threshold
-        fp[k+1] = (above_th - k - 1) / float(n_pixels - n_fix) # Ratio other saliency map values above threshold
+        fp[k+1] = (above_th - k - 1) / float(n_pixels - n_fix + epsilon) # Ratio other saliency map values above threshold
     return np.trapz(tp, fp) # y, x
 
 
@@ -116,15 +116,19 @@ def AUC_Borji(fixation_map, saliency_map, n_rep=100, step_size=0.1, rand_sampler
 	-------
 	AUC : float, between [0,1]
 	'''
+	if not isinstance(fixation_map, np.ndarray):
+		print('End of Epoch')
+		return 0.0
 	saliency_map = np.array(saliency_map, copy=False)
-	fixation_map = np.array(fixation_map, copy=False) >np.percentile(fixation_map, 95)
+	fixation_map = np.array(fixation_map, copy=False) >0.5
 	# If there are no fixation to predict, return NaN
 	if not np.any(fixation_map):
 		print('no fixation to predict')
+		print(np.nonzero(fixation_map.ravel())[0])
 		return np.nan
 	# Make the saliency_map the size of the fixation_map
 	if saliency_map.shape != fixation_map.shape:
-		saliency_map = resize(saliency_map, fixation_map.shape, order=3, mode='nearest')
+		saliency_map = resize(saliency_map, fixation_map.shape, order=3)
 	# Normalize saliency map to have values between [0,1]
 	saliency_map = normalize(saliency_map, method='range')
 
@@ -141,6 +145,9 @@ def AUC_Borji(fixation_map, saliency_map, n_rep=100, step_size=0.1, rand_sampler
 		S_rand = rand_sampler(S, F, n_rep, n_fix)
 	# Calculate AUC per random split (set of random locations)
 	auc = np.zeros(n_rep) * np.nan
+
+	all_TP = []
+	all_FP = []
 	for rep in range(n_rep):
 		thresholds = np.r_[0:np.max(np.r_[S_fix, S_rand[:,rep]]):step_size][::-1]
 		tp = np.zeros(len(thresholds)+2)
@@ -151,10 +158,57 @@ def AUC_Borji(fixation_map, saliency_map, n_rep=100, step_size=0.1, rand_sampler
 			tp[k+1] = np.sum(S_fix >= thresh) / float(n_fix)
 			fp[k+1] = np.sum(S_rand[:,rep] >= thresh) / float(n_fix)
 		auc[rep] = np.trapz(tp, fp)
-	return np.mean(auc) # Average across random splits
+		all_TP.append(tp)
+		all_FP.append(fp)
+	return np.mean(auc), (all_TP, all_FP) # Average across random splits
+
+# import tensorflow as tf
+# def AUC_Borji(fixation_map, saliency_map, n_rep=100, step_size=0.1, rand_sampler=None):
+
+#    if not tf.experimental.numpy.any(fixation_map):
+#        print('no fixation to predict')
+#        return
+
+#    	# Make the saliency_map the size of the fixation_map
+#    if saliency_map.shape != fixation_map.shape:
+#        saliency_map = tf.image.resize(saliency_map, (fixation_map.shape[1], fixation_map.shape[2]), method='nearest')
+
+#    	# Normalize saliency map to have values between [0,1]
+#    saliency_map = (saliency_map- tf.reduce_min(saliency_map))/(tf.reduce_max(saliency_map)-tf.reduce_min(saliency_map))
+
+#    S = tf.reshape(saliency_map, [-1])
+#    F = tf.reshape(fixation_map, [-1])
+#    S_fix = tf.boolean_mask(S,F) # Saliency map values at fixation locations
+#    n_fix = S_fix.shape[0]
+#    n_pixels = S.shape[0]
+#    	# For each fixation, sample n_rep values from anywhere on the saliency map
+#    if rand_sampler is None:
+#        r = tf.experimental.numpy.random.randint(0, high = n_pixels, size = [n_fix, n_rep])
+#        S_rand = tf.gather(S,r) # Saliency map values at random locations (including fixated locations!? underestimated)
+#        # for i in range(n_fix)
+#        # r = tf.experimental.numpy.random.randint(0, high = n_pixels, size = n_rep)
+#        # sample_values = tf.gather(S,r)
+
+#    else:
+#        S_rand = rand_sampler(S, F, n_rep, n_fix)
+#    	# Calculate AUC per random split (set of random locations)
+#    auc = np.zeros(n_rep) * np.nan
+#    for rep in range(n_rep):
+#        thresholds = np.r_[0:np.max(np.r_[S_fix, S_rand[:,rep]]):step_size][::-1]
+#        tp = np.zeros(len(thresholds)+2)
+#        fp = np.zeros(len(thresholds)+2)
+#        tp[0] = 0; tp[-1] = 1
+#        fp[0] = 0; fp[-1] = 1
+#        for k, thresh in enumerate(thresholds):
+#            tp[k+1] = np.sum(S_fix >= thresh) / float(n_fix)
+#            fp[k+1] = np.sum(S_rand[:,rep] >= thresh) / float(n_fix)
+#        auc[rep] = np.trapz(tp, fp)
+#    mean_auc = np.mean(auc) # Average across random splits
+#    return mean_auc
 
 
-def AUC_shuffled(fixation_map, saliency_map, other_map, n_rep=100, step_size=0.1):
+
+def  AUC_shuffled(fixation_map, saliency_map, other_map, n_rep=100, step_size=0.1):
 	'''
 	This measures how well the saliency map of an image predicts the ground truth human fixations on the image.
 	ROC curve created by sweeping through threshold values at fixed step size
@@ -181,7 +235,12 @@ def AUC_shuffled(fixation_map, saliency_map, other_map, n_rep=100, step_size=0.1
 	-------
 	AUC : float, between [0,1]
 	'''
-	other_map = np.array(other_map, copy=False) > 0.5
+
+# 	other_map = np.array(other_map, copy=False) > 0.5
+# 	print('other_map')
+# 	print(other_map)
+# 	other_map = other_map.astype(int)
+# 	print(other_map)
 	if other_map.shape != fixation_map.shape:
 		raise ValueError('other_map.shape != fixation_map.shape')
 
@@ -189,10 +248,12 @@ def AUC_shuffled(fixation_map, saliency_map, other_map, n_rep=100, step_size=0.1
 	def sample_other(other, S, F, n_rep, n_fix):
 		fixated = np.nonzero(other)[0]
 		indexer = list(map(lambda x: random.permutation(x)[:n_fix], np.tile(range(len(fixated)), [n_rep, 1])))
+		mask = np.transpose(indexer)
 		r = fixated[np.transpose(indexer)]
 		S_rand = S[r] # Saliency map values at random locations (including fixated locations!? underestimated)
 		return S_rand
-	return AUC_Borji(saliency_map, fixation_map, n_rep, step_size, partial(sample_other, other_map.ravel()))
+
+	return AUC_Borji(fixation_map, saliency_map, n_rep, step_size, rand_sampler = partial(sample_other, other_map.ravel()))
 
 
 def NSS(fixation_map, saliency_map ):
@@ -236,7 +297,7 @@ def CC(saliency_map1, saliency_map2):
 	map1 = np.array(saliency_map1, copy=False)
 	map2 = np.array(saliency_map2, copy=False)
 	if map1.shape != map2.shape:
-		map1 = resize(map1, map2.shape, order=3, mode='nearest') # bi-cubic/nearest is what Matlab imresize() does by default
+		map1 = resize(map1, map2.shape, order=3) # bi-cubic/nearest is what Matlab imresize() does by default
 	# Normalize the two maps to have zero mean and unit std
 	map1 = normalize(map1, method='standard')
 	map2 = normalize(map2, method='standard')
@@ -261,7 +322,7 @@ def SIM(saliency_map1, saliency_map2):
 	map1 = np.array(saliency_map1, copy=False)
 	map2 = np.array(saliency_map2, copy=False)
 	if map1.shape != map2.shape:
-		map1 = resize(map1, map2.shape, order=3, mode='nearest') # bi-cubic/nearest is what Matlab imresize() does by default
+		map1 = resize(map1, map2.shape, order=3) # bi-cubic/nearest is what Matlab imresize() does by default
 	# Normalize the two maps to have values between [0,1] and sum up to 1
 	map1 = normalize(map1, method='range')
 	map2 = normalize(map2, method='range')
@@ -288,8 +349,8 @@ def EMD(saliency_map1, saliency_map2, sub_sample=1/32.0):
 	'''
 	map2 = np.array(saliency_map2, copy=False)
 	# Reduce image size for efficiency of calculation
-	map2 = resize(map2, np.round(np.array(map2.shape)*sub_sample), order=3, mode='nearest')
-	map1 = resize(saliency_map1, map2.shape, order=3, mode='nearest')
+	map2 = resize(map2, np.round(np.array(map2.shape)*sub_sample), order=3)
+	map1 = resize(saliency_map1, map2.shape, order=3)
 	# Histogram match the images so they have the same mass
 	map1 = match_hist(map1, *exposure.cumulative_distribution(map2))
 	# Normalize the two maps to sum up to 1,

@@ -38,7 +38,7 @@ tf.compat.v1.keras.backend.set_session(sess)
 
 root_dir = '/home/pohsuanh/Desktop/pohsuan/projects/deep gaze/SALICON/'
 
-mode ='fine-tuning'
+mode ='Shuffled_AUC'
 
 BATCH_SIZE = 6
 
@@ -172,16 +172,18 @@ def _create_model():
 
     for layer in vgg16.layers:
 
-            # names = ['block4_conv1',
-            #         'block4_conv2',
-            #         'block4_conv3',
-            #         'block4_pool',
-            #         'block5_conv1',
-            #         'block5_conv2',
-            #         'block5_conv3',
-            #         'block5_pool']
-            # if layer.name not in names:
+            names = ['block4_conv1',
+                    'block4_conv2',
+                    'block4_conv3',
+                    'block4_pool',
+                    'block5_conv1',
+                    'block5_conv2',
+                    'block5_conv3',
+                    'block5_pool']
+            if layer.name not in names:
                 layer.trainable = False
+            if layer.name in names:
+                layer.trainable = True
 
     #""" Extend the base vgg16 model to a FCN-8 to generate fine-semantic map. """
     # inputs = tf.keras.Input(shape=(256,256,3))
@@ -260,9 +262,11 @@ def _create_model():
 
 #%%
 from utils.metrics_classes import AUC_Borji_v2
-from utils.losses import borji_auc_loss_fn
-
-
+from utils.metrics_classes import AUC_Shuffle2 as AUC_Shuffle2
+from utils.auc_losses.borji_loss import borji_auc_loss_fn
+from utils.auc_losses.shuffle_loss import shuffled_auc_loss_fn
+from utils.auc_metrics.AUC_Borji import AUC_Borji
+from utils.auc_metrics.AUC_Shuffle import AUC_Shuffle
 def L_NSS(y_true, y_pred, axis = -1, batch_size = 8): # Normalized Scan Path Loss
     """
     y_true : fixations
@@ -287,10 +291,11 @@ def total_loss(y_true, y_pred):
 strategy = tf.distribute.MirroredStrategy()
 print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 
-if mode  == 'training':
+if mode  == 'Saliency_maps':
 
     with strategy.scope():
         b_auc =AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
+        s_auc = AUC_Shuffle(replica_in_sync=strategy.num_replicas_in_sync)
         bc = tf.keras.metrics.BinaryCrossentropy(
         name="binary_crossentropy", dtype=None, from_logits=False, label_smoothing=0
         )
@@ -300,7 +305,7 @@ if mode  == 'training':
         sgd = tf.keras.optimizers.SGD(learning_rate = lr, momentum=0.9, nesterov=True )
 
         DeepGaze = _create_model()
-        DeepGaze.compile(optimizer = sgd, loss = tf.keras.losses.MSE, metrics = [ acc, auc, b_auc ], run_eagerly=True)
+        DeepGaze.compile(optimizer = sgd, loss = tf.keras.losses.MSE, metrics = [ acc, auc, b_auc, s_auc ], run_eagerly=True)
 
 
     checkpoint_path = "./pretrained_model/best_model_small/pretrain_model_small.ckpt"
@@ -355,7 +360,7 @@ if mode  == 'training':
               validation_steps= 50,
               callbacks=[lr_callback, cp_callback, tb_callback ])
 
-if mode  == 'fine-tuning':
+if mode  == 'Borji_AUC':
 
     checkpoint_path = "./pretrained_model/best_model_small/best_model_small.ckpt"
 
@@ -373,7 +378,8 @@ if mode  == 'fine-tuning':
         print('No pretrained weights.')
 
     with strategy.scope():
-            b_auc =AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
+            b_auc = AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
+            s_auc = AUC_Shuffle(replica_in_sync=strategy.num_replicas_in_sync)
             bc = tf.keras.metrics.BinaryCrossentropy(
             name="binary_crossentropy", dtype=None, from_logits=False, label_smoothing=0
             )
@@ -383,7 +389,7 @@ if mode  == 'fine-tuning':
             sgd = tf.keras.optimizers.SGD(learning_rate = lr, momentum=0.9, nesterov=True )
 
             DeepGaze = _create_model()
-            DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [auc, b_auc], run_eagerly=True)
+            DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [auc, b_auc, s_auc], run_eagerly=True)
 
 
     # DeepGaze.summary()
@@ -422,6 +428,76 @@ if mode  == 'fine-tuning':
               steps_per_epoch = 400,
               validation_steps= 50,
               callbacks=[lr_callback, cp_callback, tb_callback ])
+
+if mode  == 'Shuffled_AUC':
+
+    checkpoint_path = "./pretrained_model/best_model_small/best_model_small.ckpt"
+
+
+    # DeepGaze.compile(optimizer = sgd, loss = borji_auc_loss_fn, metrics = [ b_auc])
+
+    try :
+
+        DeepGaze.load_weights("./pretrained_model/best_model_small/best_model_small.ckpt/variables/variables")
+
+        print('Load pretraiend weights.')
+
+    except:
+
+        print('No pretrained weights.')
+
+    with strategy.scope():
+            b_auc =AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
+            s_auc = AUC_Shuffle(replica_in_sync=strategy.num_replicas_in_sync)
+            bc = tf.keras.metrics.BinaryCrossentropy(
+            name="binary_crossentropy", dtype=None, from_logits=False, label_smoothing=0
+            )
+            auc = tf.keras.metrics.AUC(name = 'auc')
+            acc = tf.keras.metrics.Accuracy(name ='Accuracy')
+            adam = tf.keras.optimizers.Adam(learning_rate = 0.0001)
+            sgd = tf.keras.optimizers.SGD(learning_rate = lr, momentum=0.9, nesterov=True )
+
+            DeepGaze = _create_model()
+            DeepGaze.compile(optimizer = sgd, loss = shuffled_auc_loss_fn, metrics = [auc, b_auc, s_auc], run_eagerly=True)
+
+
+    # DeepGaze.summary()
+    options = tf.data.Options()
+    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
+    # train_in = tf.data.Dataset.zip((train_imgs, train_bias)).with_options(options)
+    # val_in = tf.data.Dataset.zip((val_imgs, val_bias)).with_options(options)
+
+    train_tar  = tf.data.Dataset.zip((train_fmaps, train_fmaps.shuffle(buffer_size = 32)))
+    val_tar = tf.data.Dataset.zip((val_fmaps, val_fmaps.shuffle(buffer_size = 32)))
+    train_data =tf.data.Dataset.zip((train_imgs, train_tar)).with_options(options)
+    val_data = tf.data.Dataset.zip((val_imgs, val_tar)).with_options(options)
+
+    lr_callback = tf.keras.callbacks.LearningRateScheduler(inverse_epoch_learning_scheduler)
+
+    cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                     save_freq = 'epoch',
+                                                     save_weights_only = False,
+                                                     save_best_only = True,
+                                                     mode = 'max',
+                                                     monitor= 'auc',
+                                                     verbose=1)
+
+    tb_callback = tf.keras.callbacks.TensorBoard(log_dir="./logs",
+                                                histogram_freq=1,
+                                                write_graph=True,
+                                                write_images=True,
+                                                write_steps_per_second=False,
+                                                update_freq="epoch",
+                                                profile_batch=2,
+                                                embeddings_freq=2,
+                                                embeddings_metadata='./embedding'
+                                                )
+
+    DeepGaze.fit( train_data, validation_data= val_data, epochs= 20, workers= 14 ,
+              use_multiprocessing =True,
+              steps_per_epoch = 100,
+              validation_steps= 10,
+              callbacks=[lr_callback, cp_callback, tb_callback ])
 #%%
 # ==============================================================================
 # Evaluate the result
@@ -438,7 +514,7 @@ val_data = tf.data.Dataset.zip((val_imgs, val_tars, val_fmaps, other_fmaps))
 DeepGaze = _create_model()
 
 DeepGaze.load_weights("./pretrained_model/best_model_small/best_model_small.ckpt/variables/variables")
-#%%
+
 for h, (img, tar, fmap, other_fmap) in enumerate(val_data.take(1)):
 
     """ each array is actually a mini batch"""
@@ -605,6 +681,6 @@ for layer in DeepGaze.layers:
     if hasattr(layer, 'name'):
 
         # get filter weights
-        if layer.name =='block8_conv1':
-            weights = layer.get_weights()[0]
-            print(weights.shape)
+        if 'block5_conv1' in layer.name:
+            weights = layer.get_weights()
+            print(weights[0].shape, weights[1].shape)
