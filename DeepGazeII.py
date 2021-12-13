@@ -25,7 +25,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow.keras.layers as layers
 from tensorflow.keras.layers import Resizing as Resize
-
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 gpus = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_visible_devices(gpus, 'GPU')
 
@@ -38,7 +38,7 @@ tf.compat.v1.keras.backend.set_session(sess)
 
 root_dir = '/home/pohsuanh/Desktop/pohsuan/projects/deep gaze/SALICON/'
 
-mode ='Shuffled_AUC'
+mode ='Borji_AUC'
 
 BATCH_SIZE = 6
 
@@ -261,12 +261,11 @@ def _create_model():
     return DeepGaze
 
 #%%
-from utils.metrics_classes import AUC_Borji_v2
-from utils.metrics_classes import AUC_Shuffle2 as AUC_Shuffle2
 from utils.auc_losses.borji_loss import borji_auc_loss_fn
 from utils.auc_losses.shuffle_loss import shuffled_auc_loss_fn
 from utils.auc_metrics.AUC_Borji import AUC_Borji
 from utils.auc_metrics.AUC_Shuffle import AUC_Shuffle
+
 def L_NSS(y_true, y_pred, axis = -1, batch_size = 8): # Normalized Scan Path Loss
     """
     y_true : fixations
@@ -294,7 +293,7 @@ print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
 if mode  == 'Saliency_maps':
 
     with strategy.scope():
-        b_auc =AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
+        b_auc =AUC_Borji(replica_in_sync=strategy.num_replicas_in_sync)
         s_auc = AUC_Shuffle(replica_in_sync=strategy.num_replicas_in_sync)
         bc = tf.keras.metrics.BinaryCrossentropy(
         name="binary_crossentropy", dtype=None, from_logits=False, label_smoothing=0
@@ -369,7 +368,7 @@ if mode  == 'Borji_AUC':
 
     try :
 
-        DeepGaze.load_weights("./pretrained_model/best_model_small/best_model_small.ckpt/variables/variables")
+        DeepGaze.load_weights("./pretrained_model/best_model_small/pretrain_model_small.ckpt/variables/variables")
 
         print('Load pretraiend weights.')
 
@@ -378,7 +377,7 @@ if mode  == 'Borji_AUC':
         print('No pretrained weights.')
 
     with strategy.scope():
-            b_auc = AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
+            b_auc = AUC_Borji(replica_in_sync=strategy.num_replicas_in_sync)
             s_auc = AUC_Shuffle(replica_in_sync=strategy.num_replicas_in_sync)
             bc = tf.keras.metrics.BinaryCrossentropy(
             name="binary_crossentropy", dtype=None, from_logits=False, label_smoothing=0
@@ -447,7 +446,7 @@ if mode  == 'Shuffled_AUC':
         print('No pretrained weights.')
 
     with strategy.scope():
-            b_auc =AUC_Borji_v2(replica_in_sync=strategy.num_replicas_in_sync)
+            b_auc =AUC_Borji(replica_in_sync=strategy.num_replicas_in_sync)
             s_auc = AUC_Shuffle(replica_in_sync=strategy.num_replicas_in_sync)
             bc = tf.keras.metrics.BinaryCrossentropy(
             name="binary_crossentropy", dtype=None, from_logits=False, label_smoothing=0
